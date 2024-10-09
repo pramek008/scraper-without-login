@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+requests
+playwright==1.37.0
+python-dotenv
+TikTokApi
+aiohttp==3.8.5
+asyncio
