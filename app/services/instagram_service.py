@@ -6,6 +6,7 @@ import urllib.parse
 import datetime
 import logging
 import asyncio
+from typing import Dict, Any, Optional
 from app.utils.playwright_utils import get_page, navigate_and_wait
 from fastapi import FastAPI, Request, HTTPException
 
@@ -70,11 +71,14 @@ async def extract_shortcode(url, max_retries=3, delay=5):
     raise Exception(f"Failed to extract shortcode after {max_retries} attempts")
 
 def extract_shortcode_from_url(url):
-    shortcode_match = re.search(r'/(?:p|reel)/([^/]+)', url)
+    if "share" in url:
+        logger.info("URL is a share link, skipping shortcode extraction.")
+        return None
+    shortcode_match = re.search(r'/(?:p|reel|reels)/([^/]+)', url)
     logger.info(f"Extracted shortcode from input URL: {shortcode_match.group(1)}")
     return shortcode_match.group(1) if shortcode_match else None
 
-def fetch_post_data(shortcode):
+def fetch_post_data(shortcode: str, max_retries: int = 3) -> Dict:
     url = "https://www.instagram.com/graphql/query/"
 
     payload = {
@@ -97,21 +101,55 @@ def fetch_post_data(shortcode):
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    proxy = os.getenv('PROXY')
-    proxies = None
-    if proxy:
-        proxies = {
-            "http": proxy,
-            "https": proxy
-        }
+    # Dapatkan daftar proxy dari environment variable
+    proxy_list = [
+        os.getenv('PROXY', ''),
+        os.getenv('PROXY_2', ''),
+        os.getenv('PROXY_3', '')
+    ]
+    
+    # Hapus proxy kosong
+    proxy_list = [proxy for proxy in proxy_list if proxy]
 
-    try:
-        response = requests.post(url, data=encoded_payload, headers=headers, proxies=proxies)
-        # response = requests.post(url, data=encoded_payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"An error occurred: {e}")
+    for attempt in range(max_retries):
+        # Pertama, coba tanpa proxy
+        if attempt == 0:
+            proxies = None
+        else:
+            # Gunakan proxy sesuai urutan
+            current_proxy = proxy_list[attempt - 1]
+            proxies = {
+                "http": current_proxy,
+                "https": current_proxy
+            }
+
+        try:
+            response = requests.post(
+                url, 
+                data=encoded_payload, 
+                headers=headers, 
+                proxies=proxies,
+                timeout=10  # Tambahkan timeout untuk mencegah hanging
+            )
+            response.raise_for_status()
+            return response.json()
+        
+        except requests.RequestException as e:
+            # Log error atau print untuk debugging
+            print(f"Attempt {attempt + 1} failed: {e}")
+            
+            # Jika ini adalah percobaan terakhir, raise exception
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to fetch data after {max_retries} attempts: {e}"
+                )
+    
+    # Fallback jika semua percobaan gagal
+    raise HTTPException(
+        status_code=500, 
+        detail="Unexpected error in fetch_post_data"
+    )
 
 
 def convert_timestamp_to_iso(timestamp):
